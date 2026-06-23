@@ -8,10 +8,6 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 st.set_page_config(page_title="SPI PDF Extractor V7", layout="wide")
 st.title("📄 SPI PDF Extractor - V7")
 
-# ══════════════════════════════════════════════════════════════
-# UTILITAIRES
-# ══════════════════════════════════════════════════════════════
-
 def norm(t):
     return re.sub(r'\s+', ' ', str(t or '').lower().strip())
 
@@ -51,7 +47,6 @@ def clean_name(t):
     t = re.sub(r'\+?\d[\d\s\-().]{6,}\d', '', t)
     t = re.sub(r'(tel|email|phone)[.:]?\s*', '', t, flags=re.IGNORECASE)
     return re.sub(r'\s+', ' ', t).strip().strip(',;:-')
-
 
 def extract_part_number_from_page(page_words):
     line_map = {}
@@ -119,19 +114,6 @@ def value_below_label(page_words, label_keywords, max_gap=40, multi_line=False):
 
     return ' '.join(result_lines)
 
-
-# ══════════════════════════════════════════════════════════════
-# EXTRACTION CONTACT EMAIL/PHONE — logique améliorée
-#
-# Stratégie :
-# 1. Trouver toutes les occurrences du label "SUPPLIER * CONTACT"
-#    (scheduling vs packaging) avec leur position Y dans la page
-# 2. Pour chaque occurrence, scanner les lignes dans une fenêtre
-#    verticale max_gap pts en dessous pour trouver email + phone
-# 3. Si plusieurs occurrences, la 1ère = scheduling, la 2ème = packaging
-# 4. On sépare strictement par position Y pour éviter la confusion
-# ══════════════════════════════════════════════════════════════
-
 def _build_line_map(words):
     lm = {}
     for w in words:
@@ -143,7 +125,6 @@ def _line_text_at_y(lm, yk):
     return ' '.join(w['text'] for w in sorted(lm.get(yk, []), key=lambda w: float(w['x0'])))
 
 def _find_all_label_bottoms(lm, sorted_ys, keywords):
-    """Retourne TOUTES les positions Y-bottom des lignes contenant tous les keywords."""
     results = []
     for yk in sorted_ys:
         lt = _line_text_at_y(lm, yk).lower()
@@ -153,11 +134,6 @@ def _find_all_label_bottoms(lm, sorted_ys, keywords):
     return results
 
 def _extract_contact_block(lm, sorted_ys, label_bottom, next_label_y=None, max_gap=120):
-    """
-    Extrait nom, email, phone dans la zone sous label_bottom jusqu'à
-    min(label_bottom + max_gap, next_label_y si défini).
-    Retourne (name, email, phone).
-    """
     upper_bound = label_bottom + max_gap
     if next_label_y is not None:
         upper_bound = min(upper_bound, float(next_label_y) - 2)
@@ -179,7 +155,6 @@ def _extract_contact_block(lm, sorted_ys, label_bottom, next_label_y=None, max_g
         if not phone:
             ph = extract_phone(lt)
             if ph:
-                # Valider : rejeter si ressemble à Part Number (7-9 chiffres sans +)
                 digits_only = re.sub(r'[^\d]', '', ph)
                 has_plus = '+' in lt
                 long_enough = len(digits_only) >= 10
@@ -187,16 +162,10 @@ def _extract_contact_block(lm, sorted_ys, label_bottom, next_label_y=None, max_g
                     phone = ph
         if not name:
             candidate = clean_name(lt)
-            # Ne pas stocker si c'est un email ou un phone seul
             if candidate and not re.match(r'^[\d\+\s\-().]+$', candidate) and '@' not in candidate:
                 name = candidate
 
     return name, email, phone
-
-
-# ══════════════════════════════════════════════════════════════
-# EXTRACTION TABLE
-# ══════════════════════════════════════════════════════════════
 
 TABLE_SETTINGS = [
     {"vertical_strategy": "lines", "horizontal_strategy": "lines",
@@ -240,7 +209,6 @@ def _cell_title_value(page, bbox, raw):
         return parts[0], ' '.join(parts[1:])
     return (parts[0] if parts else ''), ''
 
-
 def get_cells(page):
     for settings in TABLE_SETTINGS:
         try:
@@ -266,11 +234,6 @@ def get_cells(page):
             continue
     return []
 
-
-# ══════════════════════════════════════════════════════════════
-# EXTRACTION MÉTIER
-# ══════════════════════════════════════════════════════════════
-
 def extract_page(page, filename, page_number):
     cells = get_cells(page)
     cells = sorted(cells, key=lambda c: (c['table'], c['row'], c['col']))
@@ -294,7 +257,6 @@ def extract_page(page, filename, page_number):
 
     idx = {(c['table'], c['row'], c['col']): c for c in cells}
 
-    # ── B. Carton / Wood Pallet rows ──
     carton_row = carton_table = pallet_row = pallet_table = None
     for c in cells:
         if c['col'] != 0:
@@ -343,7 +305,6 @@ def extract_page(page, filename, page_number):
             v = re.sub(r'description\s*/?\s*(item\s*#?)?\s*', '', v, flags=re.IGNORECASE).strip()
             data['Carton Description'] = v
 
-    # ── D. Parcourir les cellules (hors contacts) ──
     for c in cells:
         t   = norm(c['title'])
         val = c['value'].strip()
@@ -351,15 +312,11 @@ def extract_page(page, filename, page_number):
         v   = val or raw
 
         if 'supplier company name' in t and not data['Supplier Company Name']:
-            # Prendre toute la valeur, pas juste le début
             data['Supplier Company Name'] = v
-
         if 'shipping address' in t and not data['Shipping Address']:
             data['Shipping Address'] = v
-
         if 'manufacturing address' in t and not data['Manufacturing Address']:
             data['Manufacturing Address'] = v
-
         if 'part number' in t and not data['Part Number']:
             candidate = val or raw
             cleaned = re.sub(r'[_\-]', '', candidate)
@@ -367,7 +324,6 @@ def extract_page(page, filename, page_number):
             if m:
                 data['Part Number'] = m.group(0)
 
-        # Quantités
         if t in ('standard pack quantity (per primary container)', 'standard pack quantity'):
             if not data['Standard Pack Quantity']:
                 data['Standard Pack Quantity'] = extract_num(v)
@@ -386,48 +342,30 @@ def extract_page(page, filename, page_number):
 
         if 'pallet stackability' in t and not data['Pallet Stackability']:
             data['Pallet Stackability'] = extract_num(v) or v
-
         if 'rustproofing' in t and not data['Rustproofing Method']:
             data['Rustproofing Method'] = v
-
         if 'primary box have handles' in t and not data['Primary Box Handles']:
             data['Primary Box Handles'] = v
-
         if t == 'part weight (kg)' and not data['Part Weight (kg)']:
             data['Part Weight (kg)'] = extract_num(v)
-
         if 'primary cont gross weight' in t and not data['Primary Cont Gross Weight (kg)']:
             data['Primary Cont Gross Weight (kg)'] = extract_num(v)
-
         if 'secondary cont gross weight' in t and not data['Secondary Cont Gross Weight (kg)']:
             data['Secondary Cont Gross Weight (kg)'] = extract_num(v)
-
         if 'method to secure load' in t and not data['Method to Secure Load']:
             data['Method to Secure Load'] = v
-
-    # ══════════════════════════════════════════════════════════
-    # ── E. CONTACTS — nouvelle logique par position Y stricte ──
-    #
-    # On cherche séparément les labels "scheduling" et "packaging"
-    # dans le texte de la page (pas les cellules), puis on extrait
-    # email+phone dans la fenêtre Y strictement délimitée de chaque label.
-    # ══════════════════════════════════════════════════════════
 
     lm = _build_line_map(page_words)
     sys_ys = sorted(lm.keys())
 
-    # Trouver toutes les occurrences "supplier scheduling contact"
     sched_labels = _find_all_label_bottoms(lm, sys_ys, ['scheduling', 'contact'])
     pack_labels  = _find_all_label_bottoms(lm, sys_ys, ['packaging', 'contact'])
 
-    # Trier par position Y
     sched_labels.sort(key=lambda x: x[0])
     pack_labels.sort(key=lambda x: x[0])
 
-    # ── Scheduling (1ère occurrence) ──
     if sched_labels:
         _, sched_bottom = sched_labels[0]
-        # Borne haute = prochain label (packaging ou next scheduling) ou max_gap
         next_yk = None
         if len(sched_labels) > 1:
             next_yk = sched_labels[1][0]
@@ -445,10 +383,8 @@ def extract_page(page, filename, page_number):
         if sphone and not data['Scheduling Phone']:
             data['Scheduling Phone'] = sphone
 
-    # ── Packaging (1ère occurrence après scheduling) ──
     if pack_labels:
         _, pack_bottom = pack_labels[0]
-        # Borne haute = prochain label ou max_gap
         next_yk = None
         if len(pack_labels) > 1:
             next_yk = pack_labels[1][0]
@@ -466,19 +402,16 @@ def extract_page(page, filename, page_number):
         if pphone and not data['Packaging Phone']:
             data['Packaging Phone'] = pphone
 
-    # ── E1. Manufacturing Address via words_below_label ──
     if not data['Manufacturing Address']:
         v = value_below_label(page_words, ['manufacturing', 'address'], max_gap=40, multi_line=True)
         if v:
             data['Manufacturing Address'] = v
 
-    # ── E2. Fallback Part Number ──
     if not data['Part Number']:
         pn = extract_part_number_from_page(page_words)
         if pn:
             data['Part Number'] = pn
 
-    # ── F. Fallback texte brut ──
     text = page.extract_text() or ''
     if text:
         data = _fallback(text, data)
@@ -515,7 +448,6 @@ def _fallback(text, data):
             if m:
                 data['Part Number'] = m.group(0)
 
-        # Contacts — uniquement si encore vides (ne pas écraser la logique Y)
         if 'supplier scheduling contact' in ln and not data['Scheduling Contact Name']:
             nv = nxt(i)
             name = clean_name(nv)
@@ -590,10 +522,6 @@ def _fallback(text, data):
     return data
 
 
-# ══════════════════════════════════════════════════════════════
-# EXTRACTION FICHIER
-# ══════════════════════════════════════════════════════════════
-
 def extract_pdf(file):
     results = []
     try:
@@ -610,10 +538,6 @@ def extract_pdf(file):
     return results
 
 
-# ══════════════════════════════════════════════════════════════
-# COLONNES FINALES
-# ══════════════════════════════════════════════════════════════
-
 COLS = [
     'File', 'Page', 'Part Number',
     'Shipping Address', 'Manufacturing Address',
@@ -625,11 +549,6 @@ COLS = [
     'No. Layers on Secondary Container',
 ]
 
-
-# ══════════════════════════════════════════════════════════════
-# SESSION STATE
-# ══════════════════════════════════════════════════════════════
-
 for k, v in [('cache', []), ('results', {}), ('desel', set())]:
     if k not in st.session_state:
         st.session_state[k] = v
@@ -638,11 +557,6 @@ def reset():
     st.session_state.cache   = []
     st.session_state.results = {}
     st.session_state.desel   = set()
-
-
-# ══════════════════════════════════════════════════════════════
-# INTERFACE
-# ══════════════════════════════════════════════════════════════
 
 c1, c2 = st.columns([6, 1])
 with c2:
